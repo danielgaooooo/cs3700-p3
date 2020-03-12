@@ -5,7 +5,6 @@ import socket
 import select
 import datetime
 import json
-import os
 import time
 
 MSG_SIZE = 1500
@@ -48,11 +47,13 @@ def send_next_packet(seqn, sock, dest):
 def teardown(seqn, sock, dest):
     log("tearing down!!!")
     msg = json.dumps(
-        {"eof": True, "data": "", "sequence": seqn, "ack": False, "pid" : os.getpid()}).encode('ascii')
-    while (True):
+        {"eof": True, "data": "", "sequence": seqn, "ack": False}).encode('ascii')
+    tries = 0
+    while (tries < 10):
+      tries += 1
       # relies on the receiver to kill this process
       sock.sendto(msg, dest)
-      time.sleep(1)
+      time.sleep(0.05)
 
 def main():
     # Bind to localhost and an ephemeral port
@@ -71,12 +72,13 @@ def main():
     new_seqn = send_next_packet(seqn, sock, dest)
     if new_seqn == seqn:
         teardown(seqn, sock, dest)
+    seqn = new_seqn
 
     # Now read in data, send packets
     while True:
         log("ABOUT TO SLEEP")
         result = None
-        ready = select.select([sock], [], [], 3)
+        ready = select.select([sock], [], [], 0.5)
         if ready[0]:
             result = sock.recvfrom(MSG_SIZE)
         else:
@@ -95,7 +97,6 @@ def main():
                 # Try to send next packet; break if no more data
                 enqueue_packet(seqn)
                 new_seq = send_next_packet(seqn, sock, dest)
-                log("yoooo new_seq is: " + str(new_seq) + ", seq is: " + str(seqn))
                 if new_seq == seqn:
                     break
                 seqn = new_seq

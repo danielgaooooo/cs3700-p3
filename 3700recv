@@ -4,7 +4,6 @@ import sys
 import socket
 import datetime
 import json
-import os
 import signal
 
 MSG_SIZE = 1500
@@ -92,7 +91,6 @@ def main():
                 if decoded['eof']:
                     ack(sock, addr, decoded)
                     log("[completed]")
-                    os.kill(decoded['pid'], signal.SIGSTOP)
                     sys.exit(0)
 
                 # If there is data, we accept it and print it out
@@ -105,6 +103,7 @@ def main():
                             f"[recv data] {decoded['sequence']} ({len(decoded['data'])}) ACCEPTED (in-order)")
                         sys.stdout.write(decoded['data'])
                         lastGoodPacket = decoded
+                        ack(sock, addr, decoded)
                     else:
                         # case where the previous ack was dropped
                         if lastGoodPacket['sequence'] == decoded['sequence']:
@@ -118,10 +117,7 @@ def main():
                             if (cachedIsInOrder()):
                                 ackLastPacket(sock, addr, seqn)
                                 processAndClearCache()
-
-                # Send back an ack to the sender
-                ack(sock, addr, decoded)
-
+                
             except (ValueError, KeyError, TypeError) as exc:
                 log("[recv corrupt packet]")
                 raise exc
