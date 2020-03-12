@@ -2,78 +2,108 @@
 
 import sys
 import socket
+import select
 import datetime
 import json
+import os
+import time
 
 MSG_SIZE = 1500
 DATA_SIZE = 1472
 TIMEOUT = 30
+lastMsg = None
+messageQueue = []
+
 
 def log(string):
-  sys.stderr.write(datetime.datetime.now().strftime("%H:%M:%S.%f") + " " + string + "\n")
-  sys.stderr.flush()
+    sys.stderr.write(datetime.datetime.now().strftime(
+        "%H:%M:%S.%f") + " " + string + "\n")
+    sys.stderr.flush()
+
+
+def enqueue_packet(seqn):
+    msg = {"sequence": seqn, "data": "", "ack": False, "eof": False}
+    log("seq number is: " + str(seqn))
+    overhead = len(json.dumps(msg))
+    msg["data"] = sys.stdin.read(DATA_SIZE - overhead)
+    messageQueue.append(msg)
 
 def send_next_packet(seqn, sock, dest):
-  msg = {"sequence": seqn, "data": "", "ack": False, "eof": False}
-  log("seq number is: " + str(seqn))
-  overhead = len(json.dumps(msg))
-  msg["data"] = sys.stdin.read(DATA_SIZE - overhead)
-  if len(msg["data"]) > 0:
-    assert (len(msg) <= DATA_SIZE), f"ERROR: Datagram is longer ({len(msg)}) than {DATA_SIZE} bytes!!!"
+    global lastMsg
+    assert(len(messageQueue) > 0)
+    msg = messageQueue[0]
+    if len(msg["data"]) > 0:
+        assert (len(
+            msg) <= DATA_SIZE), f"ERROR: Datagram is longer ({len(msg)}) than {DATA_SIZE} bytes!!!"
+        if sock.sendto(json.dumps(msg).encode('ascii'), dest) < len(msg):
+            log("[error] unable to fully send packet")
+        else:
+            log("[send data] " + str(seqn) +
+                " (" + str(len(msg["data"])) + ")")
+            lastMsg = msg
+        return seqn + len(msg["data"])
+    return seqn
 
-    if sock.sendto(json.dumps(msg).encode('ascii'), dest) < len(msg):
-      log("[error] unable to fully send packet")
-    else:
-      log("[send data] " + str(seqn) + " (" + str(len(msg["data"])) + ")")
-    return seqn + len(msg["data"])
-  return seqn
+
+def teardown(seqn, sock, dest):
+    log("tearing down!!!")
+    msg = json.dumps(
+        {"eof": True, "data": "", "sequence": seqn, "ack": False, "pid" : os.getpid()}).encode('ascii')
+    while (True):
+      # relies on the receiver to kill this process
+      sock.sendto(msg, dest)
+      time.sleep(1)
 
 def main():
-  # Bind to localhost and an ephemeral port
-  ip_port = sys.argv[1]
-  udp_ip = ip_port[0:ip_port.find(":")]
-  udp_port = int(ip_port[ip_port.find(":")+1:])
-  dest = (udp_ip, udp_port)
-  seqn = 0
+    # Bind to localhost and an ephemeral port
+    ip_port = sys.argv[1]
+    udp_ip = ip_port[0:ip_port.find(":")]
+    udp_port = int(ip_port[ip_port.find(":")+1:])
+    dest = (udp_ip, udp_port)
+    seqn = 0
 
-  # Set up the socket
-  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-  sock.settimeout(TIMEOUT)
+    # Set up the socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(TIMEOUT)
 
-  # Send first packet
-  seqn = send_next_packet(seqn, sock, dest)
+    # Send first packet
+    enqueue_packet(seqn)
+    new_seqn = send_next_packet(seqn, sock, dest)
+    if new_seqn == seqn:
+        teardown(seqn, sock, dest)
 
-  # Now read in data, send packets
-  while True:
-    log("ABOUT TO SLEEP")
-    result = sock.recvfrom(MSG_SIZE)
+    # Now read in data, send packets
+    while True:
+        log("ABOUT TO SLEEP")
+        result = None
+        ready = select.select([sock], [], [], 3)
+        if ready[0]:
+            result = sock.recvfrom(MSG_SIZE)
+        else:
+            log("didn't receive an ack")
+            send_next_packet(seqn, sock, dest)
+            continue
+        (data, _addr) = result
+        data = data.decode('ascii')
 
-    if result:
-      (data, _addr) = result
-      data = data.decode('ascii')
+        try:
+            decoded = json.loads(data)
+            # If there is an ack, send next packet
+            if decoded['ack'] == seqn:
+                log(f"[recv ack] {seqn}")
+                messageQueue.remove(lastMsg)
+                # Try to send next packet; break if no more data
+                enqueue_packet(seqn)
+                new_seq = send_next_packet(seqn, sock, dest)
+                log("yoooo new_seq is: " + str(new_seq) + ", seq is: " + str(seqn))
+                if new_seq == seqn:
+                    break
+                seqn = new_seq
+        except (ValueError, KeyError, TypeError):
+            log("[recv corrupt packet]")
+        log(f"(seqn {seqn})")
+    teardown(seqn, sock, dest)
 
-      try:
-        decoded = json.loads(data)
-
-        # If there is an ack, send next packet
-        if decoded['ack'] == seqn:
-          log(f"[recv ack] {seqn}")
-
-          # Try to send next packet; break if no more data
-          new_seq = send_next_packet(seqn, sock, dest)
-          if new_seq == seqn:
-            break
-          seqn = new_seq
-      except (ValueError, KeyError, TypeError):
-        log("[recv corrupt packet]")
-    else:
-      log("[error] timeout")
-      sys.exit(-1)
-
-    log(f"(seqn {seqn})")
-
-  sock.sendto(json.dumps({"eof": True, "data": "", "sequence": seqn, "ack": False}).encode('ascii'), dest)
-  sys.exit(0)
 
 if __name__ == '__main__':
-  main()
+    main()
