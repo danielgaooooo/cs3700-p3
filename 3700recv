@@ -43,6 +43,7 @@ def ackCachedPackets(sock, addr, seqn):
         seqn = packet['sequence'] + len(packet['data'])
         ack(sock, addr, packet)
 
+
 def processAndClearCache():
     for packet in cached:
         sys.stdout.write(packet['data'])
@@ -115,7 +116,7 @@ def main():
                             if (cachedIsInOrder(seqn)):
                                 ackCachedPackets(sock, addr, seqn)
                                 processAndClearCache()
-                
+
             except (ValueError, KeyError, TypeError) as exc:
                 log("[recv corrupt packet]")
                 raise exc
