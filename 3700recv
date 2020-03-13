@@ -9,7 +9,8 @@ import signal
 MSG_SIZE = 1500
 TIMEOUT = 30
 cached = []  # packets sorted by sequence number
-
+seenSeqns = set()
+ackedSeqns = [] # list of (seqn, len)
 
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime(
@@ -18,23 +19,24 @@ def log(string):
 
 
 def insertInOrder(new_packet):
-    for i, packet in enumerate(cached):
-        if packet['sequence'] < new_packet['sequence']:
-            cached.insert(i, new_packet)
-            return
-    cached.append(new_packet)
+    if new_packet not in cached:
+        for i, packet in enumerate(cached):
+            if packet['sequence'] > new_packet['sequence']:
+                cached.insert(i, new_packet)
+                return
+        cached.append(new_packet)
 
 
 def cachedIsInOrder(seqn):
-    assert(len(cached) > 0)
-    length = 0
-    for packet in cached:
-        if packet['sequence'] != seqn + length:
-            return False
-        else:
-            seqn = packet['sequence']
-            length = len(packet['data'])
-    return True
+    if len(cached) > 0:
+        length = 0
+        for packet in cached:
+            if packet['sequence'] != seqn + length:
+                return False
+            else:
+                seqn = packet['sequence']
+                length = len(packet['data'])
+        return True
 
 
 def ackCachedPackets(sock, addr, seqn):
@@ -42,6 +44,7 @@ def ackCachedPackets(sock, addr, seqn):
     for packet in cached:
         seqn = packet['sequence'] + len(packet['data'])
         ack(sock, addr, packet)
+    return seqn
 
 
 def processAndClearCache():
@@ -51,6 +54,9 @@ def processAndClearCache():
 
 
 def ack(sock, addr, decoded):
+    seqnTuple = (decoded['sequence'], len(decoded['data']))
+    if seqnTuple not in ackedSeqns:
+        ackedSeqns.append(seqnTuple)
     msg = json.dumps({"ack": decoded['sequence'] + len(decoded['data'])})
     log("ABOUT TO SEND " + msg)
     if sock.sendto(msg.encode('ascii'), addr) < len(msg):
@@ -82,44 +88,47 @@ def main():
         if result:
             (data, addr) = result
             data = data.decode('ascii')
+            decoded = json.loads(data)
 
-            try:
-                decoded = json.loads(data)
-
-                # If the EOF flag is set, exit
-                if decoded['eof']:
-                    ack(sock, addr, decoded)
-                    log("[completed]")
-                    sys.exit(0)
-
-                # If there is data, we accept it and print it out
-                if decoded['data']:
-                    if decoded['sequence'] == seqn:
-                        # The data is in order
-                        seqn += len(decoded["data"])
-                        log("receiver seqn is now " + str(seqn))
-                        log(
-                            f"[recv data] {decoded['sequence']} ({len(decoded['data'])}) ACCEPTED (in-order)")
-                        sys.stdout.write(decoded['data'])
-                        lastGoodPacket = decoded
+            # If the EOF flag is set, exit
+            if decoded['eof']:
+                ack(sock, addr, decoded)
+                log("[completed]")
+                sys.exit(0)
+            if decoded['sequence'] in seenSeqns:
+                if len(ackedSeqns) > 0:
+                    lastAcked = ackedSeqns[len(ackedSeqns) - 1]
+                    if decoded['sequence'] <= lastAcked[0] + lastAcked[1]:
                         ack(sock, addr, decoded)
+                        continue
+            # If there is data, we accept it and print it out
+            if decoded['data']:
+                seenSeqns.add(decoded['sequence'])
+                if decoded['sequence'] == seqn:
+                    # The data is in order
+                    if decoded in cached:
+                        cached.remove(decoded)
+                    seqn += len(decoded["data"])
+                    log(
+                        f"[recv data] {decoded['sequence']} ({len(decoded['data'])}) ACCEPTED (in-order)")
+                    sys.stdout.write(decoded['data'])
+                    lastGoodPacket = decoded
+                    ack(sock, addr, decoded)
+                    if (cachedIsInOrder(seqn)):
+                        seqn = ackCachedPackets(sock, addr, seqn)
+                        processAndClearCache()
+                else:
+                    # case where the previous ack was dropped
+                    if lastGoodPacket != None and lastGoodPacket['sequence'] == decoded['sequence']:
+                        ack(sock, addr, decoded)
+                    # case where some message was dropped
                     else:
-                        # case where the previous ack was dropped
-                        if lastGoodPacket['sequence'] == decoded['sequence']:
-                            ack(sock, addr, decoded)
-                        # case where some message was dropped
-                        else:
-                            log("HELLOOOO OUT OF ORDER!!!!! " + str(seqn) +
-                                " vs " + str(decoded['sequence']))
-                            # the data is not in order
+                        # the data is not in order
+                        if decoded['sequence'] > seqn:
                             insertInOrder(decoded)
-                            if (cachedIsInOrder(seqn)):
-                                ackCachedPackets(sock, addr, seqn)
-                                processAndClearCache()
-
-            except (ValueError, KeyError, TypeError) as exc:
-                log("[recv corrupt packet]")
-                raise exc
+                        if (cachedIsInOrder(seqn)):
+                            seqn = ackCachedPackets(sock, addr, seqn)
+                            processAndClearCache()
         else:
             log("[error] timeout")
             sys.exit(-1)

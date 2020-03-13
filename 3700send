@@ -43,7 +43,6 @@ def send_packet(seqn, sock, dest, msg):
 
 
 def teardown(seqn, sock, dest):
-    log("tearing down!!!")
     msg = json.dumps(
         {"eof": True, "data": "", "sequence": seqn, "ack": False}).encode('ascii')
     tries = 0
@@ -74,7 +73,9 @@ def get_ack(sock, dest, timeout):
     if ready[0]:
         result = sock.recvfrom(MSG_SIZE)
         (data, _addr) = result
-        return json.loads(data.decode('ascii'))
+        ack = json.loads(data.decode('ascii'))
+        log("[recv ack] " + str(ack['ack']))
+        return ack
     else:
         return None
 
@@ -83,7 +84,7 @@ def removeBySeqn(seqn):
     global messageQueue
     newMessages = []
     for packet in messageQueue:
-        if packet['sequence'] + len(packet['data']) != seqn:
+        if packet['sequence'] + len(packet['data']) > seqn:
             newMessages.append(packet)
     messageQueue = newMessages
     return seqn  # means we have reached reading UP TO seqn bytes
@@ -104,29 +105,24 @@ def main():
         seqn_copy = seqn
         # enqueue WINDOW_SIZE messages, send them all
         for i in range(len(messageQueue), WINDOW_SIZE):
-            log("seq number is: " + str(seqn_copy))
-            new_seq = enqueue_packet(seqn_copy)
-            if new_seq == seqn_copy:
+            new_seq = enqueue_packet(seqn)
+            if new_seq == seqn:
                 eof = True
                 break
-            seqn_copy = new_seq
+            seqn = new_seq
         # listen for acknowledgements for some time. remove acknowledged sequence numbers
-        seqn_copy = seqn
         for message in messageQueue:
             seqn_copy = send_packet(seqn_copy, sock, dest, message)
         ack = get_ack(sock, dest, 0.3)
-        while ack != None:
-            log("removing: " + str(ack))
-            seqn = removeBySeqn(ack['ack'])
+        while ack != None:  # assumes that at least one ack will be successfully sent, always
+            removeBySeqn(ack['ack'])
             ack = get_ack(sock, dest, 0.1)
-    log("EOF signaled!")
     while len(messageQueue) > 0:
         seqn_copy = seqn
         for message in messageQueue:
             seqn_copy = send_packet(seqn_copy, sock, dest, message)
         ack = get_ack(sock, dest, 0.5)
         while ack != None:
-            log("removing: " + str(ack))
             seqn = removeBySeqn(ack['ack'])
             ack = get_ack(sock, dest, 0.1)
     teardown(seqn, sock, dest)
