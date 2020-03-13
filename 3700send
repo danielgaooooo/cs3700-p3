@@ -10,9 +10,7 @@ import time
 MSG_SIZE = 1500
 DATA_SIZE = 1472
 TIMEOUT = 30
-WINDOW_SIZE = 10
-lastMsg = None
-sentMessages = []
+WINDOW_SIZE = 80
 messageQueue = []
 
 
@@ -25,16 +23,13 @@ def log(string):
 
 def enqueue_packet(seqn):
     msg = {"sequence": seqn, "data": "", "ack": False, "eof": False}
-    log("seq number is: " + str(seqn))
     overhead = len(json.dumps(msg))
     msg["data"] = sys.stdin.read(DATA_SIZE - overhead)
-    messageQueue.append(msg)
+    if len(msg["data"]) > 0:
+        messageQueue.append(msg)
     return seqn + len(msg['data'])
 
-def send_next_packet(seqn, sock, dest):
-    global lastMsg
-    assert(len(messageQueue) > 0)
-    msg = messageQueue[0]
+def send_packet(seqn, sock, dest, msg):
     if len(msg["data"]) > 0:
         assert (len(
             msg) <= DATA_SIZE), f"ERROR: Datagram is longer ({len(msg)}) than {DATA_SIZE} bytes!!!"
@@ -43,7 +38,6 @@ def send_next_packet(seqn, sock, dest):
         else:
             log("[send data] " + str(seqn) +
                 " (" + str(len(msg["data"])) + ")")
-            lastMsg = msg
         return seqn + len(msg["data"])
     return seqn
 
@@ -72,55 +66,68 @@ def setup():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(TIMEOUT)
 
-    # Send first packet
-    enqueue_packet(seqn)
-    new_seqn = send_next_packet(seqn, sock, dest)
-    if new_seqn == seqn:
-        teardown(seqn, sock, dest)
-    seqn = new_seqn
     return (seqn, sock, dest)
 
 # Done, don't touch!
-def get_ack(seqn, sock, dest):
-    while True:
-        log("ABOUT TO SLEEP")
-        result = None
-        ready = select.select([sock], [], [], 0.5)
-        if ready[0]:
-            result = sock.recvfrom(MSG_SIZE)
-        else:
-            log("didn't receive an ack")
-            send_next_packet(seqn, sock, dest)
-            continue
+def get_ack(sock, dest, timeout):
+    result = None
+    ready = select.select([sock], [], [], timeout)
+    if ready[0]:
+        result = sock.recvfrom(MSG_SIZE)
         (data, _addr) = result
         return json.loads(data.decode('ascii'))
+    else:
+        return None
 
+def removeBySeqn(seqn):
+    global messageQueue
+    newMessages = []
+    for packet in messageQueue:
+        if packet['sequence'] + len(packet['data']) != seqn:
+            newMessages.append(packet)
+    messageQueue = newMessages
+    return seqn # means we have reached reading UP TO seqn bytes
 
 def main():
     info = setup()
+    if info == None:
+        exit(0)
     seqn = info[0]
     sock = info[1]
     dest = info[2]
 
+    eof = False
     # Now read in data, send packets
-    while True:
+    while not eof:
+        log("ABOUT TO SLEEP")
+        seqn_copy = seqn
         # enqueue WINDOW_SIZE messages, send them all
-        # Increment IN_TRANSIT per message sent
-        # Wait for 2 seconds for acks - for each ack, decrement IN_TRANSIT
-        # enqueue WINDOW_SIZE - IN_TRANSIT messages, send them all
-        # Increment IN_TRANSIT per message sent
-        decoded = get_ack(seqn, sock, dest)
-        # If there is an ack, send next packet
-        if decoded['ack'] == seqn:
-            log(f"[recv ack] {seqn}")
-            messageQueue.remove(lastMsg)
-            # Try to send next packet; break if no more data
-            enqueue_packet(seqn)
-            new_seq = send_next_packet(seqn, sock, dest)
-            if new_seq == seqn:
+        for i in range(len(messageQueue), WINDOW_SIZE):
+            log("seq number is: " + str(seqn_copy))
+            new_seq = enqueue_packet(seqn_copy)
+            if new_seq == seqn_copy: # TODO: EOF does not terminate
+                eof = True
                 break
-            seqn = new_seq
-        log(f"(seqn {seqn})")
+            seqn_copy = new_seq
+        # listen for acknowledgements for some time. remove acknowledged sequence numbers
+        seqn_copy = seqn
+        for message in messageQueue:
+            seqn_copy = send_packet(seqn_copy, sock, dest, message)
+        ack = get_ack(sock, dest, 0.3)   
+        while ack != None:
+            log("removing: " + str(ack))
+            seqn = removeBySeqn(ack['ack'])
+            ack = get_ack(sock, dest, 0.1)   
+    log("EOF signaled!")
+    while len(messageQueue) > 0:
+        seqn_copy = seqn
+        for message in messageQueue:
+            seqn_copy = send_packet(seqn_copy, sock, dest, message)        
+        ack = get_ack(sock, dest, 0.5)   
+        while ack != None:
+            log("removing: " + str(ack))
+            seqn = removeBySeqn(ack['ack'])
+            ack = get_ack(sock, dest, 0.1) 
     teardown(seqn, sock, dest)
 
 

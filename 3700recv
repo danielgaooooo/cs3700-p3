@@ -18,7 +18,7 @@ def log(string):
 
 
 def insertInOrder(new_packet):
-    for i, packet in cached:
+    for i, packet in enumerate(cached):
         if packet['sequence'] < new_packet['sequence']:
             cached.insert(i, new_packet)
             return
