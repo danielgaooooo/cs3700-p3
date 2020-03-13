@@ -25,25 +25,23 @@ def insertInOrder(new_packet):
     cached.append(new_packet)
 
 
-def cachedIsInOrder():
+def cachedIsInOrder(seqn):
     assert(len(cached) > 0)
-    seqn = cached[0]['sequence']
-    length = len(cached[0])
+    length = 0
     for packet in cached:
         if packet['sequence'] != seqn + length:
             return False
         else:
             seqn = packet['sequence']
-            length = len(packet)
+            length = len(packet['data'])
     return True
 
 
-def ackLastPacket(sock, addr, seqn):
+def ackCachedPackets(sock, addr, seqn):
     assert(len(cached) > 0)
-    lastPacket = cached.get(len(cached) - 1)
-    seqn = lastPacket['sequence'] + len(lastPacket['data'])
-    ack(sock, addr, lastPacket)
-
+    for packet in cached:
+        seqn = packet['sequence'] + len(packet['data'])
+        ack(sock, addr, packet)
 
 def processAndClearCache():
     for packet in cached:
@@ -114,8 +112,8 @@ def main():
                                 " vs " + str(decoded['sequence']))
                             # the data is not in order
                             insertInOrder(decoded)
-                            if (cachedIsInOrder()):
-                                ackLastPacket(sock, addr, seqn)
+                            if (cachedIsInOrder(seqn)):
+                                ackCachedPackets(sock, addr, seqn)
                                 processAndClearCache()
                 
             except (ValueError, KeyError, TypeError) as exc:

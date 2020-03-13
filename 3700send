@@ -10,10 +10,13 @@ import time
 MSG_SIZE = 1500
 DATA_SIZE = 1472
 TIMEOUT = 30
+WINDOW_SIZE = 10
 lastMsg = None
+sentMessages = []
 messageQueue = []
 
 
+# Done, don't touch!
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime(
         "%H:%M:%S.%f") + " " + string + "\n")
@@ -26,6 +29,7 @@ def enqueue_packet(seqn):
     overhead = len(json.dumps(msg))
     msg["data"] = sys.stdin.read(DATA_SIZE - overhead)
     messageQueue.append(msg)
+    return seqn + len(msg['data'])
 
 def send_next_packet(seqn, sock, dest):
     global lastMsg
@@ -44,18 +48,19 @@ def send_next_packet(seqn, sock, dest):
     return seqn
 
 
+# Done, don't touch!
 def teardown(seqn, sock, dest):
     log("tearing down!!!")
     msg = json.dumps(
         {"eof": True, "data": "", "sequence": seqn, "ack": False}).encode('ascii')
     tries = 0
     while (tries < 10):
-      tries += 1
-      # relies on the receiver to kill this process
-      sock.sendto(msg, dest)
-      time.sleep(0.05)
+        tries += 1
+        sock.sendto(msg, dest)
+        time.sleep(0.05)
 
-def main():
+# Done, don't touch!
+def setup():
     # Bind to localhost and an ephemeral port
     ip_port = sys.argv[1]
     udp_ip = ip_port[0:ip_port.find(":")]
@@ -73,8 +78,10 @@ def main():
     if new_seqn == seqn:
         teardown(seqn, sock, dest)
     seqn = new_seqn
+    return (seqn, sock, dest)
 
-    # Now read in data, send packets
+# Done, don't touch!
+def get_ack(seqn, sock, dest):
     while True:
         log("ABOUT TO SLEEP")
         result = None
@@ -86,22 +93,33 @@ def main():
             send_next_packet(seqn, sock, dest)
             continue
         (data, _addr) = result
-        data = data.decode('ascii')
+        return json.loads(data.decode('ascii'))
 
-        try:
-            decoded = json.loads(data)
-            # If there is an ack, send next packet
-            if decoded['ack'] == seqn:
-                log(f"[recv ack] {seqn}")
-                messageQueue.remove(lastMsg)
-                # Try to send next packet; break if no more data
-                enqueue_packet(seqn)
-                new_seq = send_next_packet(seqn, sock, dest)
-                if new_seq == seqn:
-                    break
-                seqn = new_seq
-        except (ValueError, KeyError, TypeError):
-            log("[recv corrupt packet]")
+
+def main():
+    info = setup()
+    seqn = info[0]
+    sock = info[1]
+    dest = info[2]
+
+    # Now read in data, send packets
+    while True:
+        # enqueue WINDOW_SIZE messages, send them all
+        # Increment IN_TRANSIT per message sent
+        # Wait for 2 seconds for acks - for each ack, decrement IN_TRANSIT
+        # enqueue WINDOW_SIZE - IN_TRANSIT messages, send them all
+        # Increment IN_TRANSIT per message sent
+        decoded = get_ack(seqn, sock, dest)
+        # If there is an ack, send next packet
+        if decoded['ack'] == seqn:
+            log(f"[recv ack] {seqn}")
+            messageQueue.remove(lastMsg)
+            # Try to send next packet; break if no more data
+            enqueue_packet(seqn)
+            new_seq = send_next_packet(seqn, sock, dest)
+            if new_seq == seqn:
+                break
+            seqn = new_seq
         log(f"(seqn {seqn})")
     teardown(seqn, sock, dest)
 
