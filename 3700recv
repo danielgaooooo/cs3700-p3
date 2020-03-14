@@ -8,16 +8,17 @@ import signal
 
 MSG_SIZE = 1500
 TIMEOUT = 30
-cached = []  # packets sorted by sequence number
-seenSeqns = set()
-ackedSeqns = [] # list of (seqn, len)
+cached = []       # packets sorted by sequence number
+seenSeqns = set() # seqn we have seen
+ackedSeqns = []   # list of (seqn, len)
 
+# Logger helper
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime(
         "%H:%M:%S.%f") + " " + string + "\n")
     sys.stderr.flush()
 
-
+# Inserts a packet into our cache sorted by sequence number
 def insertInOrder(new_packet):
     if new_packet not in cached:
         for i, packet in enumerate(cached):
@@ -26,7 +27,7 @@ def insertInOrder(new_packet):
                 return
         cached.append(new_packet)
 
-
+# Checks if our cache is in order (consecutive seqn). If so, they can all be ack'ed
 def cachedIsInOrder(seqn):
     if len(cached) > 0:
         length = 0
@@ -38,7 +39,7 @@ def cachedIsInOrder(seqn):
                 length = len(packet['data'])
         return True
 
-
+# Ack everything in our cache
 def ackCachedPackets(sock, addr, seqn):
     assert(len(cached) > 0)
     for packet in cached:
@@ -46,13 +47,13 @@ def ackCachedPackets(sock, addr, seqn):
         ack(sock, addr, packet)
     return seqn
 
-
+# Write out everything in our cache, and then clear our cache
 def processAndClearCache():
     for packet in cached:
         sys.stdout.write(packet['data'])
     cached.clear()
 
-
+# Acknowledge some packet
 def ack(sock, addr, decoded):
     seqnTuple = (decoded['sequence'], len(decoded['data']))
     if seqnTuple not in ackedSeqns:
@@ -95,17 +96,20 @@ def main():
                 ack(sock, addr, decoded)
                 log("[completed]")
                 sys.exit(0)
+
+            # If we have seen this packet before, ack it iff we have previously ack'ed
             if decoded['sequence'] in seenSeqns:
                 if len(ackedSeqns) > 0:
                     lastAcked = ackedSeqns[len(ackedSeqns) - 1]
                     if decoded['sequence'] <= lastAcked[0] + lastAcked[1]:
                         ack(sock, addr, decoded)
                         continue
+
             # If there is data, we accept it and print it out
             if decoded['data']:
                 seenSeqns.add(decoded['sequence'])
+                # The data is in order
                 if decoded['sequence'] == seqn:
-                    # The data is in order
                     if decoded in cached:
                         cached.remove(decoded)
                     seqn += len(decoded["data"])
@@ -117,13 +121,13 @@ def main():
                     if (cachedIsInOrder(seqn)):
                         seqn = ackCachedPackets(sock, addr, seqn)
                         processAndClearCache()
+                # The data is not in order
                 else:
                     # case where the previous ack was dropped
                     if lastGoodPacket != None and lastGoodPacket['sequence'] == decoded['sequence']:
                         ack(sock, addr, decoded)
                     # case where some message was dropped
                     else:
-                        # the data is not in order
                         if decoded['sequence'] > seqn:
                             insertInOrder(decoded)
                         if (cachedIsInOrder(seqn)):

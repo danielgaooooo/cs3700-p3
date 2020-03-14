@@ -10,16 +10,16 @@ import time
 MSG_SIZE = 1500
 DATA_SIZE = 1472
 TIMEOUT = 30
-WINDOW_SIZE = 80
+WINDOW_SIZE = 40
 messageQueue = []
 
-
+# Logger helper
 def log(string):
     sys.stderr.write(datetime.datetime.now().strftime(
         "%H:%M:%S.%f") + " " + string + "\n")
     sys.stderr.flush()
 
-
+# Queues the next packet from stdin
 def enqueue_packet(seqn):
     msg = {"sequence": seqn, "data": "", "ack": False, "eof": False}
     overhead = len(json.dumps(msg))
@@ -28,7 +28,7 @@ def enqueue_packet(seqn):
         messageQueue.append(msg)
     return seqn + len(msg['data'])
 
-
+# Sends the given packet to the socket
 def send_packet(seqn, sock, dest, msg):
     if len(msg["data"]) > 0:
         assert (len(
@@ -41,7 +41,7 @@ def send_packet(seqn, sock, dest, msg):
         return seqn + len(msg["data"])
     return seqn
 
-
+# Tells the receiver that we're done. Send the message 10 times, cross fingers
 def teardown(seqn, sock, dest):
     msg = json.dumps(
         {"eof": True, "data": "", "sequence": seqn, "ack": False}).encode('ascii')
@@ -51,7 +51,7 @@ def teardown(seqn, sock, dest):
         sock.sendto(msg, dest)
         time.sleep(0.05)
 
-
+# gets receiver sock, dest, and starting seqn
 def setup():
     # Bind to localhost and an ephemeral port
     ip_port = sys.argv[1]
@@ -66,7 +66,7 @@ def setup():
 
     return (seqn, sock, dest)
 
-
+# Listens for an ack from the receiver
 def get_ack(sock, dest, timeout):
     result = None
     ready = select.select([sock], [], [], timeout)
@@ -79,7 +79,7 @@ def get_ack(sock, dest, timeout):
     else:
         return None
 
-
+# Removes packets less than or equal to this seqn
 def removeBySeqn(seqn):
     global messageQueue
     newMessages = []
@@ -114,9 +114,11 @@ def main():
         for message in messageQueue:
             seqn_copy = send_packet(seqn_copy, sock, dest, message)
         ack = get_ack(sock, dest, 0.3)
-        while ack != None:  # assumes that at least one ack will be successfully sent, always
+        # if acknowledged, remove from list so we won't re-send
+        while ack != None:
             removeBySeqn(ack['ack'])
             ack = get_ack(sock, dest, 0.1)
+    # if EOF, continue sending the messges leftover in queue until all ack'ed
     while len(messageQueue) > 0:
         seqn_copy = seqn
         for message in messageQueue:
